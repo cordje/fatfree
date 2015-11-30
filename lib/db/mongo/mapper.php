@@ -128,24 +128,27 @@ class Mapper extends \DB\Cursor {
 		);
 		$fw=\Base::instance();
 		$cache=\Cache::instance();
-		if (!($cached=$cache->exists($hash=$fw->hash($this->db->dsn().
-			$fw->stringify(array($fields,$filter,$options))).'.mongo',
-			$result)) || !$ttl || $cached[0]+$ttl<microtime(TRUE)) {
+		if (!$fw->get('CACHE') || !$ttl || !($cached=$cache->exists(
+			$hash=$fw->hash($fw->stringify(array($fields,$filter,$options))).
+				'.mongo',$result)) || $cached+$ttl<microtime(TRUE)) {
 			if ($options['group']) {
-				$grp=$this->collection->group(
-					$options['group']['keys'],
-					$options['group']['initial'],
-					$options['group']['reduce'],
-					array(
-						'condition'=>$filter,
-						'finalize'=>$options['group']['finalize']
-					)
-				);
 				$tmp=$this->db->selectcollection(
-					$fw->get('HOST').'.'.$fw->get('BASE').'.'.
-					uniqid(NULL,TRUE).'.tmp'
+					$fw->get('HOST').'.'.$fw->get('BASE').'.'.uniqid().'.tmp'
 				);
-				$tmp->batchinsert($grp['retval'],array('w'=>1));
+				$tmp->batchinsert(
+					$this->collection->group(
+						$options['group']['keys'],
+						$options['group']['initial'],
+						$options['group']['reduce'],
+						array(
+							'condition'=>array(
+								$filter,
+								$options['group']['finalize']
+							)
+						)
+					),
+					array('safe'=>TRUE)
+				);
 				$filter=array();
 				$collection=$tmp;
 			}
@@ -153,25 +156,39 @@ class Mapper extends \DB\Cursor {
 				$filter=$filter?:array();
 				$collection=$this->collection;
 			}
-			$this->cursor=$collection->find($filter,$fields?:array());
+			$cursor=$collection->find($filter,$fields?:array());
 			if ($options['order'])
-				$this->cursor=$this->cursor->sort($options['order']);
+				$cursor=$cursor->sort($options['order']);
 			if ($options['limit'])
-				$this->cursor=$this->cursor->limit($options['limit']);
+				$cursor=$cursor->limit($options['limit']);
 			if ($options['offset'])
-				$this->cursor=$this->cursor->skip($options['offset']);
-			$result=array();
-			while ($this->cursor->hasnext())
-				$result[]=$this->cursor->getnext();
+				$cursor=$cursor->skip($options['offset']);
 			if ($options['group'])
 				$tmp->drop();
+			$result=iterator_to_array($cursor,FALSE);
 			if ($fw->get('CACHE') && $ttl)
 				// Save to cache backend
 				$cache->set($hash,$result,$ttl);
 		}
-		$out=array();
-		foreach ($result as $doc)
-			$out[]=$this->factory($doc);
+                if(class_exists('SplFixedArray')) {
+                    $out = new \SplFixedArray(count($result));
+                }else{
+                    $out = array();
+                }
+                $c=0;
+                foreach ($result as &$doc) {
+			foreach ($doc as &$val) {
+				if (is_array($val))
+					$val=json_decode(json_encode($val));
+				unset($val);
+			}
+			$out[$c]=$this->factory($doc);
+
+                        unset($doc);
+                        $c++;
+		}
+                unset($c);
+                
 		return $out;
 	}
 
